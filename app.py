@@ -177,7 +177,13 @@ def extract_candidate_dimensions(image):
     big = image.convert("RGB").resize(
         (image.width * scale, image.height * scale), Image.LANCZOS
     )
-    raw_text = pytesseract.image_to_string(big, config="--psm 11")
+    try:
+        raw_text = pytesseract.image_to_string(big, config="--psm 11")
+    except pytesseract.TesseractNotFoundError:
+        # Binary missing at runtime (e.g. packages.txt not yet applied on this
+        # deploy) — degrade to manual entry instead of crashing the app.
+        st.session_state["ocr_runtime_unavailable"] = True
+        return []
     lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
 
     all_keywords = [kw for grp in ROOM_KEYWORD_DEFAULTS for kw in grp[0]]
@@ -384,6 +390,15 @@ with tab_plan:
         st.warning(
             "OCR isn't available in this environment (missing `pytesseract` / `tesseract-ocr`). "
             "You can still upload a plan for reference and fill in the table manually below."
+        )
+    elif st.session_state.get("ocr_runtime_unavailable"):
+        st.warning(
+            "The `tesseract-ocr` binary isn't installed on this deployment yet, so automatic "
+            "text scanning is unavailable right now — you can still fill in the table manually. "
+            "If you're on Streamlit Cloud: make sure `packages.txt` (containing `tesseract-ocr`) "
+            "sits in the same root folder as `app.py` and `requirements.txt`, then go to "
+            "**Manage app → Reboot app** — apt packages are only installed on a fresh boot, "
+            "not on every push."
         )
 
     uploaded_plan = st.file_uploader("Floor plan image", type=["png", "jpg", "jpeg"])
