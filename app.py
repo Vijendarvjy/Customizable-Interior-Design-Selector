@@ -119,8 +119,18 @@ def get_element_style_options(element_name: str):
 if "gallery" not in st.session_state:
     st.session_state.gallery = []  # list of dicts: {room, element, prompt, image_bytes, ts}
 
+def _load_default_token() -> str:
+    """Look for a token in secrets.toml first, then fall back to an env var."""
+    try:
+        if hasattr(st, "secrets") and "HF_TOKEN" in st.secrets:
+            return st.secrets["HF_TOKEN"]
+    except Exception:
+        pass  # no secrets.toml present — that's fine, just fall through
+    return os.environ.get("HF_TOKEN", "")
+
+
 if "hf_token" not in st.session_state:
-    st.session_state.hf_token = os.environ.get("HF_TOKEN", "")
+    st.session_state.hf_token = _load_default_token()
 
 
 # --------------------------------------------------------------------------
@@ -129,12 +139,15 @@ if "hf_token" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Setup")
 
-    default_token = st.session_state.hf_token or st.secrets.get("HF_TOKEN", "") if hasattr(st, "secrets") else st.session_state.hf_token
+    token_source = "secrets.toml / env" if st.session_state.hf_token else "not set"
     token_input = st.text_input(
         "Hugging Face API Token",
         value=st.session_state.hf_token,
         type="password",
-        help="Needs Inference API access. Get one at huggingface.co/settings/tokens",
+        help=(
+            f"Currently loaded from: {token_source}. "
+            "Needs Inference API access — get one at huggingface.co/settings/tokens"
+        ),
     )
     if token_input:
         st.session_state.hf_token = token_input
