@@ -161,40 +161,60 @@ def guess_room_defaults(label_text: str):
 DIMENSION_PATTERN = re.compile(
     r"[\dOo][\w'\"°%½¼¾\-/]{2,}\s*[xX×]\s*[\dOo][\w'\"°%½¼¾\-/]{1,}"
 )
+# Looser fallback for cases where quote/foot marks get stripped entirely,
+# e.g. "11 6 x 10 0"
+FALLBACK_PATTERN = re.compile(
+    r"\d{1,2}[^\dA-Za-z]{0,4}\d{0,2}\s*[xX×]\s*\d{1,2}[^\dA-Za-z]{0,4}\d{0,2}"
+)
 
 
 def extract_candidate_dimensions(image):
     """
-    OCR the uploaded floor plan and return a list of candidate rows:
-    {room_guess, dimension_raw, line_text}. Upscaling + a sparse-text page
-    segmentation mode noticeably improves recognition on small, decorative
-    floor-plan labels.
+    OCR the uploaded floor plan and return (candidates, raw_text).
+    Floor-plan dimension labels are frequently rotated 90 degrees along a
+    wall, so this scans the image at 0/90/180/270 degree rotations with
+    contrast enhancement, merging all recognized lines before pattern
+    matching. raw_text is always returned (even with zero candidates) so
+    the caller can show it to the user as a manual fallback.
     """
     if not OCR_AVAILABLE:
-        return []
+        return [], ""
+
+    from PIL import ImageOps
 
     scale = 3
-    big = image.convert("RGB").resize(
-        (image.width * scale, image.height * scale), Image.LANCZOS
-    )
-    try:
-        raw_text = pytesseract.image_to_string(big, config="--psm 11")
-    except pytesseract.TesseractNotFoundError:
-        # Binary missing at runtime (e.g. packages.txt not yet applied on this
-        # deploy) — degrade to manual entry instead of crashing the app.
-        st.session_state["ocr_runtime_unavailable"] = True
-        return []
-    lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+    base = ImageOps.autocontrast(image.convert("L"))
+    big = base.resize((base.width * scale, base.height * scale), Image.LANCZOS)
 
+    all_lines = []
+    seen = set()
+    for angle in (0, 90, 180, 270):
+        rotated = big.rotate(angle, expand=True)
+        try:
+            text = pytesseract.image_to_string(rotated, config="--psm 11")
+        except pytesseract.TesseractNotFoundError:
+            # Binary missing at runtime (e.g. packages.txt not yet applied on
+            # this deploy) — degrade to manual entry instead of crashing.
+            st.session_state["ocr_runtime_unavailable"] = True
+            return [], ""
+        except Exception:
+            continue
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if ln and ln not in seen:
+                seen.add(ln)
+                all_lines.append(ln)
+
+    raw_text = "\n".join(all_lines)
     all_keywords = [kw for grp in ROOM_KEYWORD_DEFAULTS for kw in grp[0]]
     candidates = []
-    for i, line in enumerate(lines):
-        match = DIMENSION_PATTERN.search(line)
+    for i, line in enumerate(all_lines):
+        match = DIMENSION_PATTERN.search(line) or FALLBACK_PATTERN.search(line)
         if not match:
             continue
         room_guess = line.replace(match.group(0), "").strip(" -:")
         if not room_guess:
-            for prev in reversed(lines[max(0, i - 2): i]):
+            for prev in reversed(all_lines[max(0, i - 2): i]):
                 if any(k in prev.lower() for k in all_keywords):
                     room_guess = prev
                     break
@@ -203,7 +223,7 @@ def extract_candidate_dimensions(image):
             "dimension_raw": match.group(0),
             "line_text": line,
         })
-    return candidates
+    return candidates, raw_text
 
 
 ROOMS = SAMPLE_ROOMS
@@ -412,17 +432,27 @@ with tab_plan:
         if "plan_candidates" not in st.session_state or st.session_state.get("plan_file_name") != uploaded_plan.name:
             st.session_state.plan_file_name = uploaded_plan.name
             if OCR_AVAILABLE:
-                with st.spinner("Scanning plan for room labels and dimensions..."):
-                    st.session_state.plan_candidates = extract_candidate_dimensions(plan_image)
+                with st.spinner("Scanning plan (checking multiple rotations for wall-aligned text)..."):
+                    candidates_result, raw_text_result = extract_candidate_dimensions(plan_image)
+                st.session_state.plan_candidates = candidates_result
+                st.session_state.plan_raw_text = raw_text_result
             else:
                 st.session_state.plan_candidates = []
+                st.session_state.plan_raw_text = ""
 
         candidates = st.session_state.plan_candidates
         with col_info:
             if candidates:
                 st.success(f"Found {len(candidates)} possible dimension label(s). Review below.")
-            elif OCR_AVAILABLE:
-                st.info("No dimension-like text detected automatically — add rows manually below.")
+            elif OCR_AVAILABLE and not st.session_state.get("ocr_runtime_unavailable"):
+                st.info(
+                    "No dimension pattern auto-matched — check the raw scanned text below "
+                    "and add rows manually; OCR often reads the numbers correctly but with "
+                    "symbols scrambled enough to dodge the pattern matcher."
+                )
+            if st.session_state.get("plan_raw_text"):
+                with st.expander("🔍 View raw scanned text (read values by eye if needed)"):
+                    st.text(st.session_state.plan_raw_text)
 
         st.subheader("2. Confirm rooms & dimensions")
         if candidates:
