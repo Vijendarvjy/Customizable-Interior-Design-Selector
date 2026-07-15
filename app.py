@@ -34,6 +34,37 @@ st.set_page_config(
 MODEL_ID = "black-forest-labs/FLUX.1-schnell"
 
 # --------------------------------------------------------------------------
+# Force a clean white theme (independent of .streamlit/config.toml, so it
+# stays white even if a viewer's browser/OS prefers dark mode)
+# --------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+        .stApp {
+            background-color: #FFFFFF;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #F7F5F2;
+        }
+        [data-testid="stHeader"] {
+            background-color: #FFFFFF;
+        }
+        h1, h2, h3, h4, p, span, label, .stMarkdown {
+            color: #262626;
+        }
+        img {
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+        }
+        .stButton > button, .stDownloadButton > button {
+            border-radius: 8px;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --------------------------------------------------------------------------
 # Domain data: rooms, elements, styles, materials
 # --------------------------------------------------------------------------
 ROOMS = {
@@ -257,13 +288,10 @@ with tab_design:
             with st.spinner("Generating your design... this can take 10-30 seconds"):
                 image_bytes = generate_image(final_prompt)
             if image_bytes:
-                st.image(image_bytes, use_container_width=True, caption=f"{room} · {element} · {style}")
-                st.download_button(
-                    "⬇️ Download Image",
-                    data=image_bytes,
-                    file_name=f"{room}_{element}_{int(time.time())}.png".replace(" ", "_").replace("/", "-"),
-                    mime="image/png",
-                    use_container_width=True,
+                st.session_state.last_image = image_bytes
+                st.session_state.last_caption = f"{room} · {element} · {style}"
+                st.session_state.last_filename = (
+                    f"{room}_{element}_{int(time.time())}.png".replace(" ", "_").replace("/", "-")
                 )
                 st.session_state.gallery.append({
                     "room": room,
@@ -272,6 +300,21 @@ with tab_design:
                     "image_bytes": image_bytes,
                     "ts": datetime.now().isoformat(),
                 })
+
+        if st.session_state.get("last_image"):
+            st.markdown("#### 🖼️ Your Generated Design")
+            st.image(
+                st.session_state.last_image,
+                use_container_width=True,
+                caption=st.session_state.last_caption,
+            )
+            st.download_button(
+                "⬇️ Download Image",
+                data=st.session_state.last_image,
+                file_name=st.session_state.last_filename,
+                mime="image/png",
+                use_container_width=True,
+            )
 
 # ---------------- Tab 2: Full project view ----------------
 with tab_project:
