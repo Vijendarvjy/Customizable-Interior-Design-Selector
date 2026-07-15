@@ -68,25 +68,59 @@ st.markdown(
 # Domain data: rooms, elements, styles, materials
 # --------------------------------------------------------------------------
 ROOMS = {
-    "Bedroom": {
+    "C. Bedroom (11'-6\" x 11'-10.5\")": {
         "icon": "🛏️",
+        "dimension": "11 ft 6 in x 11 ft 10.5 in",
+        "door_ref": "D3", "window_ref": "W2",
         "elements": ["Door", "Window", "TV Unit / Wall", "Woodwork (Wardrobe)"],
     },
-    "Children's Bedroom": {
-        "icon": "🧸",
-        "elements": ["Door", "Window", "TV Unit / Wall", "Woodwork (Wardrobe/Study Unit)"],
+    "G. Bedroom (11'-6\" x 11'-7.5\")": {
+        "icon": "🛏️",
+        "dimension": "11 ft 6 in x 11 ft 7.5 in",
+        "door_ref": "D3", "window_ref": "W4",
+        "elements": ["Door", "Window", "TV Unit / Wall", "Woodwork (Wardrobe)"],
     },
-    "Hall / Entryway": {
-        "icon": "🚪",
-        "elements": ["Door", "Window", "Woodwork (Shoe Rack/Console)"],
+    "M. Bedroom (14'-0\" x 10'-0\")": {
+        "icon": "🛏️",
+        "dimension": "14 ft x 10 ft",
+        "door_ref": "D1", "window_ref": "W1 / W4",
+        "elements": ["Door", "Window", "TV Unit / Wall", "Woodwork (Wardrobe)"],
     },
-    "Living Room": {
+    "Kitchen (9'-6\" x 8'-1.5\")": {
+        "icon": "🍳",
+        "dimension": "9 ft 6 in x 8 ft 1.5 in",
+        "door_ref": "D1", "window_ref": "KW1",
+        "elements": ["Door", "Window", "Woodwork (Cabinets/Island)"],
+    },
+    "Utility (4'-6\" x 8'-1.5\")": {
+        "icon": "🧺",
+        "dimension": "4 ft 6 in x 8 ft 1.5 in",
+        "door_ref": "D2", "window_ref": "—",
+        "elements": ["Door", "Woodwork (Storage Unit)"],
+    },
+    "Living/Dining (12'-1.5\" x 20'-9\")": {
         "icon": "🛋️",
+        "dimension": "12 ft 1.5 in x 20 ft 9 in",
+        "door_ref": "M.D-1 (main)", "window_ref": "3'-6\" wide balcony opening",
         "elements": ["Door", "Window", "TV Unit / Wall", "Woodwork (Cabinet/Paneling)"],
     },
-    "Kitchen": {
-        "icon": "🍳",
-        "elements": ["Door", "Window", "Woodwork (Cabinets/Island)"],
+    "Toilet - C.Bedroom (4'-8\" x 8'-3\")": {
+        "icon": "🚿",
+        "dimension": "4 ft 8 in x 8 ft 3 in",
+        "door_ref": "D3", "window_ref": "—",
+        "elements": ["Door", "Woodwork (Vanity Unit)"],
+    },
+    "Toilet - G.Bedroom (4'-9\" x 8'-0\")": {
+        "icon": "🚿",
+        "dimension": "4 ft 9 in x 8 ft 0 in",
+        "door_ref": "D3", "window_ref": "—",
+        "elements": ["Door", "Woodwork (Vanity Unit)"],
+    },
+    "Toilet - M.Bedroom (8'-8\" x 5'-0\")": {
+        "icon": "🚿",
+        "dimension": "8 ft 8 in x 5 ft 0 in",
+        "door_ref": "D2", "window_ref": "—",
+        "elements": ["Door", "Woodwork (Vanity Unit)"],
     },
 }
 
@@ -201,15 +235,24 @@ with st.sidebar:
 # --------------------------------------------------------------------------
 # Prompt builder
 # --------------------------------------------------------------------------
-def build_prompt(room, element, style, focus_style, material, colors, details):
+def build_prompt(room, element, style, focus_style, material, colors, details, dimension=None, door_ref=None, window_ref=None):
     prompt = (
-        f"A professional interior design photograph of a {style.lower()} {room.lower()}, "
+        f"A professional interior design photograph of a {style.lower()} room "
+        f"measuring exactly {dimension}, " if dimension else
+        f"A professional interior design photograph of a {style.lower()} room, "
+    )
+    prompt += (
         f"featuring a {focus_style.lower()} for the {element.lower()}, "
         f"crafted from {material.lower()}, "
         f"color palette of {colors.lower()}. "
+        f"Furniture and fixtures proportioned realistically to fit the stated room size. "
         f"Photorealistic, architectural digest style, soft natural lighting, "
         f"high detail, 4k, wide angle shot, no people, no text, no watermark."
     )
+    if door_ref and door_ref != "—":
+        prompt += f" Door position corresponds to marker {door_ref} on the floor plan."
+    if window_ref and window_ref != "—":
+        prompt += f" Window/opening corresponds to marker {window_ref} on the floor plan."
     if details:
         prompt += f" Additional details: {details}."
     return prompt
@@ -255,7 +298,13 @@ with tab_design:
             list(ROOMS.keys()),
             format_func=lambda r: f"{ROOMS[r]['icon']} {r}",
         )
-        element = st.selectbox("Element to Design", ROOMS[room]["elements"])
+        room_info = ROOMS[room]
+        st.caption(
+            f"📐 Dimensions: **{room_info['dimension']}** · "
+            f"Door ref: **{room_info['door_ref']}** · "
+            f"Window ref: **{room_info['window_ref']}**"
+        )
+        element = st.selectbox("Element to Design", room_info["elements"])
 
         st.subheader("2. Choose Style")
         style = st.selectbox("Overall Design Style", STYLES)
@@ -279,7 +328,12 @@ with tab_design:
 
     with col2:
         st.subheader("Preview")
-        prompt_preview = build_prompt(room, element, style, focus_style, material, colors, details)
+        prompt_preview = build_prompt(
+            room, element, style, focus_style, material, colors, details,
+            dimension=room_info["dimension"],
+            door_ref=room_info["door_ref"],
+            window_ref=room_info["window_ref"],
+        )
         with st.expander("Generated prompt (editable)", expanded=False):
             edited_prompt = st.text_area("Prompt sent to model", value=prompt_preview, height=140)
 
