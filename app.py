@@ -16,11 +16,20 @@ Requires a Hugging Face token with Inference API access, set as:
 
 import os
 import io
+import re
 import time
 from datetime import datetime
 
 import streamlit as st
+import pandas as pd
 from huggingface_hub import InferenceClient
+
+try:
+    from PIL import Image
+    import pytesseract
+    OCR_AVAILABLE = True
+except Exception:
+    OCR_AVAILABLE = False
 
 # --------------------------------------------------------------------------
 # Page config
@@ -67,7 +76,9 @@ st.markdown(
 # --------------------------------------------------------------------------
 # Domain data: rooms, elements, styles, materials
 # --------------------------------------------------------------------------
-ROOMS = {
+# SAMPLE_ROOMS: a worked example (from a previously uploaded 3BHK plan) shown
+# until the user uploads their own floor plan and confirms rooms below.
+SAMPLE_ROOMS = {
     "C. Bedroom (11'-6\" x 11'-10.5\")": {
         "icon": "🛏️",
         "dimension": "11 ft 6 in x 11 ft 10.5 in",
@@ -123,6 +134,73 @@ ROOMS = {
         "elements": ["Door", "Woodwork (Vanity Unit)"],
     },
 }
+
+ROOM_KEYWORD_DEFAULTS = [
+    # (keywords to match in OCR/room text, icon, default element list)
+    (["toilet", "wash", "bath"], "🚿", ["Door", "Woodwork (Vanity Unit)"]),
+    (["kitchen"], "🍳", ["Door", "Window", "Woodwork (Cabinets/Island)"]),
+    (["utility"], "🧺", ["Door", "Woodwork (Storage Unit)"]),
+    (["living", "dining", "hall"], "🛋️", ["Door", "Window", "TV Unit / Wall", "Woodwork (Cabinet/Paneling)"]),
+    (["bed"], "🛏️", ["Door", "Window", "TV Unit / Wall", "Woodwork (Wardrobe)"]),
+    (["balcony"], "🌿", ["Door", "Window"]),
+]
+
+
+def guess_room_defaults(label_text: str):
+    """Given a room label (e.g. 'M.Bed room'), guess an icon + sensible element list."""
+    lower = (label_text or "").lower()
+    for keywords, icon, elements in ROOM_KEYWORD_DEFAULTS:
+        if any(k in lower for k in keywords):
+            return icon, elements
+    return "🏠", ["Door", "Window", "Woodwork (Cabinet/Paneling)"]
+
+
+# Loose pattern: matches noisy OCR dimension-like tokens, e.g. 11'-6"x11'-10½",
+# 9'-6°x8"-1'/4", 14'-O°x10-0". Intentionally permissive — the user reviews
+# and corrects the extracted text in an editable table afterward.
+DIMENSION_PATTERN = re.compile(
+    r"[\dOo][\w'\"°%½¼¾\-/]{2,}\s*[xX×]\s*[\dOo][\w'\"°%½¼¾\-/]{1,}"
+)
+
+
+def extract_candidate_dimensions(image):
+    """
+    OCR the uploaded floor plan and return a list of candidate rows:
+    {room_guess, dimension_raw, line_text}. Upscaling + a sparse-text page
+    segmentation mode noticeably improves recognition on small, decorative
+    floor-plan labels.
+    """
+    if not OCR_AVAILABLE:
+        return []
+
+    scale = 3
+    big = image.convert("RGB").resize(
+        (image.width * scale, image.height * scale), Image.LANCZOS
+    )
+    raw_text = pytesseract.image_to_string(big, config="--psm 11")
+    lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+
+    all_keywords = [kw for grp in ROOM_KEYWORD_DEFAULTS for kw in grp[0]]
+    candidates = []
+    for i, line in enumerate(lines):
+        match = DIMENSION_PATTERN.search(line)
+        if not match:
+            continue
+        room_guess = line.replace(match.group(0), "").strip(" -:")
+        if not room_guess:
+            for prev in reversed(lines[max(0, i - 2): i]):
+                if any(k in prev.lower() for k in all_keywords):
+                    room_guess = prev
+                    break
+        candidates.append({
+            "room_guess": room_guess or "",
+            "dimension_raw": match.group(0),
+            "line_text": line,
+        })
+    return candidates
+
+
+ROOMS = SAMPLE_ROOMS
 
 STYLES = [
     "Modern Minimalist",
@@ -181,6 +259,9 @@ def get_element_style_options(element_name: str):
 # --------------------------------------------------------------------------
 # Session state
 # --------------------------------------------------------------------------
+if "custom_rooms" not in st.session_state:
+    st.session_state.custom_rooms = None  # populated once user confirms rooms from an uploaded plan
+
 if "gallery" not in st.session_state:
     st.session_state.gallery = []  # list of dicts: {room, element, prompt, image_bytes, ts}
 
@@ -285,7 +366,111 @@ st.write(
     "generate photoreal concepts instantly with AI."
 )
 
-tab_design, tab_project = st.tabs(["🎨 Design a Single Element", "🏠 Full Project View"])
+tab_plan, tab_design, tab_project = st.tabs(
+    ["📤 Upload Floor Plan", "🎨 Design a Single Element", "🏠 Full Project View"]
+)
+
+# ---------------- Tab 0: Upload plan & confirm room dimensions ----------------
+with tab_plan:
+    st.subheader("1. Upload your floor plan")
+    st.write(
+        "Upload a floor plan image and this will scan it for room labels and dimensions "
+        "(e.g. \"11'-6\\\" x 11'-10½\\\"\"). OCR on decorative/rotated floor-plan text is "
+        "imperfect, so review and correct the table below before generating designs — "
+        "it's pre-filled with best-effort guesses, not final answers."
+    )
+
+    if not OCR_AVAILABLE:
+        st.warning(
+            "OCR isn't available in this environment (missing `pytesseract` / `tesseract-ocr`). "
+            "You can still upload a plan for reference and fill in the table manually below."
+        )
+
+    uploaded_plan = st.file_uploader("Floor plan image", type=["png", "jpg", "jpeg"])
+
+    if uploaded_plan is not None:
+        plan_image = Image.open(uploaded_plan) if OCR_AVAILABLE else None
+        col_img, col_info = st.columns([1, 1])
+        with col_img:
+            st.image(uploaded_plan, caption="Uploaded floor plan", use_container_width=True)
+
+        if "plan_candidates" not in st.session_state or st.session_state.get("plan_file_name") != uploaded_plan.name:
+            st.session_state.plan_file_name = uploaded_plan.name
+            if OCR_AVAILABLE:
+                with st.spinner("Scanning plan for room labels and dimensions..."):
+                    st.session_state.plan_candidates = extract_candidate_dimensions(plan_image)
+            else:
+                st.session_state.plan_candidates = []
+
+        candidates = st.session_state.plan_candidates
+        with col_info:
+            if candidates:
+                st.success(f"Found {len(candidates)} possible dimension label(s). Review below.")
+            elif OCR_AVAILABLE:
+                st.info("No dimension-like text detected automatically — add rows manually below.")
+
+        st.subheader("2. Confirm rooms & dimensions")
+        if candidates:
+            default_rows = [
+                {
+                    "Room Name": c["room_guess"] or f"Room {i+1}",
+                    "Dimension": c["dimension_raw"],
+                    "Door Ref": "",
+                    "Window Ref": "",
+                    "Elements (comma-separated)": ", ".join(guess_room_defaults(c["room_guess"])[1]),
+                }
+                for i, c in enumerate(candidates)
+            ]
+        else:
+            default_rows = [
+                {"Room Name": "", "Dimension": "", "Door Ref": "", "Window Ref": "",
+                 "Elements (comma-separated)": "Door, Window, TV Unit / Wall, Woodwork (Wardrobe)"}
+            ]
+
+        rooms_df = st.data_editor(
+            pd.DataFrame(default_rows),
+            num_rows="dynamic",
+            use_container_width=True,
+            key="rooms_editor",
+        )
+
+        if st.button("✅ Build Design Rooms from This Table", type="primary"):
+            new_rooms = {}
+            for _, row in rooms_df.iterrows():
+                name = str(row.get("Room Name", "")).strip()
+                dimension = str(row.get("Dimension", "")).strip()
+                if not name or not dimension:
+                    continue
+                icon, default_elements = guess_room_defaults(name)
+                elements_raw = str(row.get("Elements (comma-separated)", "")).strip()
+                elements = [e.strip() for e in elements_raw.split(",") if e.strip()] or default_elements
+                key = f"{name} ({dimension})"
+                new_rooms[key] = {
+                    "icon": icon,
+                    "dimension": dimension,
+                    "door_ref": str(row.get("Door Ref", "")).strip() or "—",
+                    "window_ref": str(row.get("Window Ref", "")).strip() or "—",
+                    "elements": elements,
+                }
+            if new_rooms:
+                st.session_state.custom_rooms = new_rooms
+                st.success(f"{len(new_rooms)} room(s) ready — switch to the Design tab to generate.")
+            else:
+                st.error("No valid rows found — each room needs at least a Room Name and Dimension.")
+
+    if st.session_state.custom_rooms:
+        st.divider()
+        st.caption(
+            f"✅ Currently using **{len(st.session_state.custom_rooms)} room(s)** from your uploaded plan "
+            "in the Design tab. Upload a new plan and rebuild the table above to replace them."
+        )
+        if st.button("Reset to sample plan"):
+            st.session_state.custom_rooms = None
+            st.rerun()
+
+active_rooms = st.session_state.custom_rooms or SAMPLE_ROOMS
+if not st.session_state.custom_rooms:
+    st.sidebar.info("Using the sample plan. Upload your own in the '📤 Upload Floor Plan' tab.")
 
 # ---------------- Tab 1: Single element designer ----------------
 with tab_design:
@@ -295,10 +480,10 @@ with tab_design:
         st.subheader("1. Choose Room & Element")
         room = st.selectbox(
             "Room Type",
-            list(ROOMS.keys()),
-            format_func=lambda r: f"{ROOMS[r]['icon']} {r}",
+            list(active_rooms.keys()),
+            format_func=lambda r: f"{active_rooms[r]['icon']} {r}",
         )
-        room_info = ROOMS[room]
+        room_info = active_rooms[room]
         st.caption(
             f"📐 Dimensions: **{room_info['dimension']}** · "
             f"Door ref: **{room_info['door_ref']}** · "
@@ -378,7 +563,7 @@ with tab_project:
     else:
         rooms_present = sorted(set(item["room"] for item in st.session_state.gallery))
         for r in rooms_present:
-            st.markdown(f"### {ROOMS.get(r, {}).get('icon', '')} {r}")
+            st.markdown(f"### {active_rooms.get(r, {}).get('icon', '')} {r}")
             items = [i for i in st.session_state.gallery if i["room"] == r]
             cols = st.columns(min(len(items), 4) or 1)
             for idx, item in enumerate(items):
