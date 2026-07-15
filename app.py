@@ -342,14 +342,19 @@ with st.sidebar:
 # --------------------------------------------------------------------------
 # Prompt builder
 # --------------------------------------------------------------------------
+def clean_room_label(room: str) -> str:
+    """Strip a trailing '(dimensions)' suffix from a room key for use in prose, e.g.
+    'Kitchen (9\'-6" x 8\'-1.5")' -> 'Kitchen'."""
+    return re.sub(r"\s*\([^)]*\)\s*$", "", room).strip() or room
+
+
 def build_prompt(room, element, style, focus_style, material, colors, details, dimension=None, door_ref=None, window_ref=None):
-    prompt = (
-        f"A professional interior design photograph of a {style.lower()} room "
-        f"measuring exactly {dimension}, " if dimension else
-        f"A professional interior design photograph of a {style.lower()} room, "
-    )
+    room_label = clean_room_label(room)
+    prompt = f"A professional interior design photograph of a {style.lower()} {room_label.lower()}"
+    if dimension:
+        prompt += f", sized exactly {dimension}"
     prompt += (
-        f"featuring a {focus_style.lower()} for the {element.lower()}, "
+        f", featuring a {focus_style.lower()} for the {element.lower()}, "
         f"crafted from {material.lower()}, "
         f"color palette of {colors.lower()}. "
         f"Furniture and fixtures proportioned realistically to fit the stated room size. "
