@@ -1,19 +1,3 @@
-"""
-Customizable Interior Design Selector
---------------------------------------
-Lets a user pick a room type + an element (door / window / TV unit / woodwork),
-choose style, material, color, and extra details, then generates a photoreal
-concept image using Hugging Face's FLUX.1-schnell model.
-
-Run:
-    streamlit run app.py
-
-Requires a Hugging Face token with Inference API access, set as:
-    - an environment variable HF_TOKEN, or
-    - st.secrets["HF_TOKEN"] in .streamlit/secrets.toml, or
-    - pasted into the sidebar at runtime
-"""
-
 import os
 import io
 import re
